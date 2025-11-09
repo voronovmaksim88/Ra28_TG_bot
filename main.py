@@ -1,5 +1,6 @@
 from colorama import init, Fore
 from pymodbus.client import ModbusTcpClient
+from datetime import datetime
 import struct
 import time
 
@@ -42,7 +43,9 @@ try:
                 float_bytes = struct.pack('>HH', high_word, low_word)
                 float_value = struct.unpack('>f', float_bytes)[0]
 
-                print(f"Тподачи СО {float_value:.1f} градусов")
+                # Получаем текущую дату и время
+                current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                print(f"{current_time} - Температура подачи системы отопления: {float_value:.1f} °С")
 
                 # Закрываем соединение после успешного чтения
                 client.close()
