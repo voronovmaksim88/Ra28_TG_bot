@@ -33,5 +33,5 @@ simulator = ["aiohttp (>=3.10.6) ; python_version >= \"3.12\"", "aiohttp (>=3.8.
 
 [metadata]
 lock-version = "2.1"
-python-versions = ">=3.13"
-content-hash = "c4032829f4aaab420e59a3bee3f02af0e0b72246be633c48c8de76b74e16029a"
+python-versions = ">=3.12"
+content-hash = "5b3bcfd741efad3ff0a87a4d27ad556c2ce2ddfb97720a151da7f41a16bd0bc5"

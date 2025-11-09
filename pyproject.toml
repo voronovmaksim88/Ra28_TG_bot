@@ -6,7 +6,7 @@ authors = [
     {name = "voronovmaksim88",email = "voronovmaksim88@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "colorama (>=0.4.6,<0.5.0)",
     "pymodbus (>=3.11.3,<4.0.0)"

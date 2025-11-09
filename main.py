@@ -12,7 +12,7 @@ print(Fore.GREEN + "начинаем опрос Z037...")
 MODBUS_HOST = "5.128.70.180"
 MODBUS_PORT = 8502
 UNIT_ID = 247
-REGISTER_ADDRESS = 5
+REGISTER_ADDRESS_Tpod_SO = 5 # адрес регистра Температура подачи системы отопления
 
 # Создаем клиент Modbus TCP
 client = ModbusTcpClient(host=MODBUS_HOST, port=MODBUS_PORT)
@@ -30,7 +30,7 @@ try:
                     continue
 
             # Читаем 2 регистра
-            result = client.read_holding_registers(address=REGISTER_ADDRESS, count=2, device_id=UNIT_ID)
+            result = client.read_holding_registers(address=REGISTER_ADDRESS_Tpod_SO, count=2, device_id=UNIT_ID)
 
             if result.isError():
                 print(Fore.RED + f"Ошибка чтения регистра: {result}")
