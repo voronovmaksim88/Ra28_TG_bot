@@ -34,7 +34,7 @@ COPY pyproject.toml poetry.lock ./
 # --no-root: не устанавливать сам проект как пакет
 # --no-interaction: не запрашивать интерактивный ввод
 RUN poetry config virtualenvs.in-project true \
-    && poetry install --no-interaction --no-root --no-dev
+    && poetry install --no-interaction --no-root
 
 # --- Финальный образ ---
 FROM base AS runtime
