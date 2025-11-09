@@ -1,0 +1,13 @@
+services:
+  ra28-tg-bot:
+    container_name: ra28-tg-bot
+    image: ra28-tg-bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+
