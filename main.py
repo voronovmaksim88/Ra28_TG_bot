@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CallbackContext
 from loguru import logger
 import threading
+from collections import deque
 
 init()
 
@@ -28,8 +29,9 @@ async def send_startup_notification(app):
             await app.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text="🚀 main.py запущен\n\n"
-                     "✅ Modbus опрос активен\n"
-                     "⏰ Ежедневный отчет: 14:00 UTC"
+                     "✅ Modbus опрос активен (каждые 10 сек)\n"
+                     "📊 Расчет средней температуры за час (360 измерений)\n"
+                     "⏰ Ежедневный отчет: 14:20 UTC"
             )
             logger.info("✅ Уведомление о запуске отправлено в Telegram")
         except Exception as telegram_error:
@@ -46,14 +48,16 @@ MODBUS_PORT = 8502
 UNIT_ID = 247
 REGISTER_ADDRESS_Tpod_SO = 5 # адрес регистра Температура подачи системы отопления
 
-# Глобальная переменная для хранения последней температуры
+# Глобальные переменные для хранения температуры
 last_temperature = None
+# Массив для хранения 360 последних значений температуры (360 * 10 сек = 1 час)
+temperature_history = deque(maxlen=360)
 temperature_lock = threading.Lock()
 
 # Функция для опроса Modbus (работает в отдельном потоке)
 def modbus_polling_loop():
     """Постоянно опрашивает Modbus и обновляет температуру"""
-    global last_temperature
+    global last_temperature, temperature_history
     
     client = ModbusTcpClient(host=MODBUS_HOST, port=MODBUS_PORT)
     
@@ -94,11 +98,24 @@ def modbus_polling_loop():
                     # Сохраняем температуру в глобальную переменную (thread-safe)
                     with temperature_lock:
                         last_temperature = temp_pod_so_float_value
+                        # Добавляем температуру в массив для расчета среднего за час
+                        temperature_history.append(temp_pod_so_float_value)
 
                     # Получаем текущую дату и время
                     current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                    print(f"{current_time} - Температура подачи системы отопления: {temp_pod_so_float_value:.1f} °С")
-                    logger.debug(f"📊 Температура: {temp_pod_so_float_value:.1f} °С")
+                    
+                    # Рассчитываем среднюю температуру за час
+                    with temperature_lock:
+                        if len(temperature_history) > 0:
+                            avg_temp = sum(temperature_history) / len(temperature_history)
+                            count = len(temperature_history)
+                        else:
+                            avg_temp = temp_pod_so_float_value
+                            count = 1
+                    
+                    print(f"{current_time} - Температура подачи СО: {temp_pod_so_float_value:.1f} °С | "
+                          f"Средняя за час: {avg_temp:.1f} °С (измерений: {count}/360)")
+                    logger.debug(f"📊 Температура: {temp_pod_so_float_value:.1f} °С, средняя: {avg_temp:.1f} °С")
 
                     # Закрываем соединение после успешного чтения
                     client.close()
@@ -121,7 +138,7 @@ def modbus_polling_loop():
 
 # Асинхронная функция для ежедневной отправки температуры
 async def daily_temperature_report(context: CallbackContext) -> None:
-    """Ежедневно в 14:00 UTC отправляет отчет о температуре"""
+    """Ежедневно в 14:20 UTC отправляет отчет о температуре"""
     logger.info("🕐 Запуск ежедневного отчета о температуре")
     
     if not TELEGRAM_CHAT_ID:
@@ -129,26 +146,44 @@ async def daily_temperature_report(context: CallbackContext) -> None:
         return
     
     try:
-        # Получаем последнюю температуру (thread-safe)
+        # Получаем последнюю температуру и рассчитываем среднюю (thread-safe)
         with temperature_lock:
             current_temp = last_temperature
+            # Рассчитываем среднюю температуру за час
+            if len(temperature_history) > 0:
+                avg_temp = sum(temperature_history) / len(temperature_history)
+                history_count = len(temperature_history)
+            else:
+                avg_temp = None
+                history_count = 0
         
         # Формируем сообщение
         current_date = datetime.now().strftime("%d.%m.%Y")
         
         if current_temp is not None:
+            # Формируем текст с текущей температурой
             message = (
                 f"📊 Ежедневный отчет о температуре\n\n"
                 f"📅 Дата: {current_date}\n"
-                f"🕐 Время: 14:00 UTC\n\n"
-                f"🌡️ Температура подачи СО: {current_temp:.1f} °С"
+                f"🕐 Время: 14:20 UTC\n\n"
+                f"🌡️ Текущая температура подачи СО: {current_temp:.1f} °С\n"
             )
-            logger.info(f"📤 Отправка отчета: температура {current_temp:.1f} °С")
+            
+            # Добавляем среднюю температуру, если есть данные
+            if avg_temp is not None and history_count > 0:
+                message += f"📈 Средняя температура за час: {avg_temp:.1f} °С\n"
+                message += f"📊 Количество измерений: {history_count}/360"
+                avg_temp_str = f"{avg_temp:.1f}"
+            else:
+                message += f"⚠️ Недостаточно данных для расчета средней температуры"
+                avg_temp_str = "N/A"
+                
+            logger.info(f"📤 Отправка отчета: текущая {current_temp:.1f} °С, средняя {avg_temp_str} °С")
         else:
             message = (
                 f"📊 Ежедневный отчет о температуре\n\n"
                 f"📅 Дата: {current_date}\n"
-                f"🕐 Время: 14:00 UTC\n\n"
+                f"🕐 Время: 14:20 UTC\n\n"
                 f"⚠️ Данные о температуре недоступны\n"
                 f"(возможно, нет связи с контроллером)"
             )
@@ -180,14 +215,14 @@ def main():
         when=2
     )
     
-    # Планируем ежедневную отправку температуры в 14:00 UTC (21:00 по Новосибирску)
+    # Планируем ежедневную отправку температуры в 14:20 UTC
     app.job_queue.run_daily(
         daily_temperature_report,
-        time=dtime(hour=14, minute=0)
+        time=dtime(hour=14, minute=20)
     )
     
     logger.success("🚀 Telegram бот настроен")
-    logger.info("⏰ Расписание: отчет о температуре каждый день в 14:00 UTC")
+    logger.info("⏰ Расписание: отчет о температуре каждый день в 14:20 UTC")
     
     # Запускаем Modbus опрос в отдельном потоке
     modbus_thread = threading.Thread(target=modbus_polling_loop, daemon=True)
@@ -195,7 +230,7 @@ def main():
     logger.info("🔄 Modbus опрос запущен в отдельном потоке")
     
     print(Fore.GREEN + "✅ Бот запущен. Ожидание команд и выполнение по расписанию..." + Fore.RESET)
-    print(Fore.CYAN + "⏰ Ежедневный отчет о температуре: 14:00 UTC" + Fore.RESET)
+    print(Fore.CYAN + "⏰ Ежедневный отчет о температуре: 14:20 UTC" + Fore.RESET)
     
     # Запускаем polling — бот начинает работу
     app.run_polling()
