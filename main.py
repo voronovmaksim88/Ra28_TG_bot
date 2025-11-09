@@ -3,8 +3,39 @@ from pymodbus.client import ModbusTcpClient
 from datetime import datetime
 import struct
 import time
+import os
+from dotenv import load_dotenv
+from telegram import Bot
+import asyncio
+from loguru import logger
 
 init()
+
+# Загружаем переменные окружения из файла .env
+load_dotenv()
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+# Настройка логирования
+os.makedirs("logs", exist_ok=True)
+logger.add("logs/bot.log", rotation="1 day", retention="7 days", level="INFO")
+
+# Функция для отправки сообщения в Telegram
+async def send_telegram_message(message: str):
+    """Отправляет сообщение в Telegram"""
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+            logger.info(f"✅ Сообщение отправлено в Telegram: {message}")
+        except Exception as telegram_error:
+            logger.error(f"❌ Ошибка отправки сообщения в Telegram: {telegram_error}")
+            print(Fore.RED + f"Ошибка отправки сообщения в Telegram: {telegram_error}")
+    else:
+        logger.warning("⚠️ Telegram бот не настроен (отсутствуют TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID)")
+
+# Отправляем сообщение о запуске
+asyncio.run(send_telegram_message("main.py запущен"))
 
 print(Fore.GREEN + "начинаем опрос Z037...")
 
@@ -50,8 +81,8 @@ try:
                 # Закрываем соединение после успешного чтения
                 client.close()
 
-        except Exception as e:
-            print(Fore.RED + f"Ошибка при чтении: {e}")
+        except Exception as modbus_error:
+            print(Fore.RED + f"Ошибка при чтении: {modbus_error}")
             client.close()  # Закрываем соединение при ошибке
 
         # Ждем 10 секунд перед следующим запросом
