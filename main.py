@@ -39,9 +39,9 @@ try:
                     # Используем big-endian порядок байтов
                     float_bytes = struct.pack('>HH', high_word, low_word)
                     float_value = struct.unpack('>f', float_bytes)[0]
-                    
+
                     # Выводим значение
-                    print(f"Тподачи СО {float_value} градусов")
+                    print(f"Тподачи СО {float_value:.1f} градусов")
 
             except Exception as e:
                 print(Fore.RED + f"Ошибка при чтении: {e}")
