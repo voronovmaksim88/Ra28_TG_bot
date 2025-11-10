@@ -1,6 +1,6 @@
 from colorama import init, Fore
 from pymodbus.client import ModbusTcpClient
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 import struct
 import time
 import os
@@ -28,10 +28,10 @@ async def send_startup_notification(app):
         try:
             await app.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
-                text="🚀 main.py запущен\n\n"
+                text=                     "🚀 main.py запущен\n\n"
                      "✅ Modbus опрос активен (каждые 10 сек)\n"
                      "📊 Расчет средней температуры за час (360 измерений)\n"
-                     "⏰ Ежедневный отчет: 14:20 UTC"
+                     "⏰ Ежедневные отчеты: 01:00 UTC и 14:00 UTC"
             )
             logger.info("✅ Уведомление о запуске отправлено в Telegram")
         except Exception as telegram_error:
@@ -138,7 +138,7 @@ def modbus_polling_loop():
 
 # Асинхронная функция для ежедневной отправки температуры
 async def daily_temperature_report(context: CallbackContext) -> None:
-    """Ежедневно в 14:20 UTC отправляет отчет о температуре"""
+    """Ежедневно отправляет отчет о температуре"""
     logger.info("🕐 Запуск ежедневного отчета о температуре")
     
     if not TELEGRAM_CHAT_ID:
@@ -159,13 +159,14 @@ async def daily_temperature_report(context: CallbackContext) -> None:
         
         # Формируем сообщение
         current_date = datetime.now().strftime("%d.%m.%Y")
+        current_time_utc = datetime.now(timezone.utc).strftime("%H:%M")
         
         if current_temp is not None:
             # Формируем текст с текущей температурой
             message = (
                 f"📊 Ежедневный отчет о температуре\n\n"
                 f"📅 Дата: {current_date}\n"
-                f"🕐 Время: 14:20 UTC\n\n"
+                f"🕐 Время: {current_time_utc} UTC\n\n"
                 f"🌡️ Текущая температура подачи СО: {current_temp:.1f} °С\n"
             )
             
@@ -183,7 +184,7 @@ async def daily_temperature_report(context: CallbackContext) -> None:
             message = (
                 f"📊 Ежедневный отчет о температуре\n\n"
                 f"📅 Дата: {current_date}\n"
-                f"🕐 Время: 14:20 UTC\n\n"
+                f"🕐 Время: {current_time_utc} UTC\n\n"
                 f"⚠️ Данные о температуре недоступны\n"
                 f"(возможно, нет связи с контроллером)"
             )
@@ -215,14 +216,20 @@ def main():
         when=2
     )
     
-    # Планируем ежедневную отправку температуры в 14:20 UTC
+    # Планируем ежедневную отправку температуры в 01:00 UTC
     app.job_queue.run_daily(
         daily_temperature_report,
-        time=dtime(hour=14, minute=20)
+        time=dtime(hour=1, minute=0)
+    )
+    
+    # Планируем ежедневную отправку температуры в 14:00 UTC
+    app.job_queue.run_daily(
+        daily_temperature_report,
+        time=dtime(hour=14, minute=0)
     )
     
     logger.success("🚀 Telegram бот настроен")
-    logger.info("⏰ Расписание: отчет о температуре каждый день в 14:20 UTC")
+    logger.info("⏰ Расписание: отчеты о температуре каждый день в 01:00 UTC и 14:00 UTC")
     
     # Запускаем Modbus опрос в отдельном потоке
     modbus_thread = threading.Thread(target=modbus_polling_loop, daemon=True)
@@ -230,7 +237,7 @@ def main():
     logger.info("🔄 Modbus опрос запущен в отдельном потоке")
     
     print(Fore.GREEN + "✅ Бот запущен. Ожидание команд и выполнение по расписанию..." + Fore.RESET)
-    print(Fore.CYAN + "⏰ Ежедневный отчет о температуре: 14:20 UTC" + Fore.RESET)
+    print(Fore.CYAN + "⏰ Ежедневные отчеты о температуре: 01:00 UTC и 14:00 UTC" + Fore.RESET)
     
     # Запускаем polling — бот начинает работу
     app.run_polling()
