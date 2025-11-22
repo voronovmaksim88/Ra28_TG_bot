@@ -5,7 +5,7 @@ import struct
 import time
 import os
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, CallbackContext
+from telegram.ext import ApplicationBuilder, CallbackContext, CommandHandler
 from loguru import logger
 import threading
 from collections import deque
@@ -33,7 +33,9 @@ async def send_startup_notification(app):
                      "✅ Modbus опрос активен (каждые 10 сек)\n"
                      "📊 Расчет средней температуры за час (360 измерений)\n"
                      f"⚠️ Мониторинг низкой температуры (порог: {MIN_AVERAGE_TEMPERATURE:.1f} °С)\n"
-                     "⏰ Ежедневные отчеты: 01:00 UTC и 14:00 UTC"
+                     "⏰ Ежедневные отчеты: 01:00 UTC и 14:00 UTC\n\n"
+                     "💡 Доступные команды:\n"
+                     "   /temperature - показать текущую температуру"
             )
             logger.info("✅ Уведомление о запуске отправлено в Telegram")
         except Exception as telegram_error:
@@ -190,6 +192,50 @@ def modbus_polling_loop(bot_app=None):
         print(Fore.GREEN + "Соединение закрыто")
         logger.info("🔌 Modbus: соединение закрыто")
 
+# Вспомогательная функция для формирования отчёта о температуре
+def generate_temperature_report(report_title="📊 Отчет о температуре"):
+    """Формирует текст отчёта о температуре"""
+    # Получаем последнюю температуру и рассчитываем среднюю (thread-safe)
+    with temperature_lock:
+        current_temp = last_temperature
+        # Рассчитываем среднюю температуру за час
+        if len(temperature_history) > 0:
+            avg_temp = sum(temperature_history) / len(temperature_history)
+            history_count = len(temperature_history)
+        else:
+            avg_temp = None
+            history_count = 0
+    
+    # Формируем сообщение
+    current_date = datetime.now().strftime("%d.%m.%Y")
+    current_time_utc = datetime.now(timezone.utc).strftime("%H:%M")
+    
+    if current_temp is not None:
+        # Формируем текст с текущей температурой
+        message = (
+            f"{report_title}\n\n"
+            f"📅 Дата: {current_date}\n"
+            f"🕐 Время: {current_time_utc} UTC\n\n"
+            f"🌡️ Текущая температура подачи СО: {current_temp:.1f} °С\n"
+        )
+        
+        # Добавляем среднюю температуру, если есть данные
+        if avg_temp is not None and history_count > 0:
+            message += f"📈 Средняя температура за час: {avg_temp:.1f} °С\n"
+            message += f"📊 Количество измерений: {history_count}/{TEMP_HISTORY_SIZE}"
+        else:
+            message += f"⚠️ Недостаточно данных для расчета средней температуры"
+    else:
+        message = (
+            f"{report_title}\n\n"
+            f"📅 Дата: {current_date}\n"
+            f"🕐 Время: {current_time_utc} UTC\n\n"
+            f"⚠️ Данные о температуре недоступны\n"
+            f"(возможно, нет связи с контроллером)"
+        )
+    
+    return message
+
 # Асинхронная функция для ежедневной отправки температуры
 async def daily_temperature_report(context: CallbackContext) -> None:
     """Ежедневно отправляет отчет о температуре"""
@@ -200,49 +246,7 @@ async def daily_temperature_report(context: CallbackContext) -> None:
         return
     
     try:
-        # Получаем последнюю температуру и рассчитываем среднюю (thread-safe)
-        with temperature_lock:
-            current_temp = last_temperature
-            # Рассчитываем среднюю температуру за час
-            if len(temperature_history) > 0:
-                avg_temp = sum(temperature_history) / len(temperature_history)
-                history_count = len(temperature_history)
-            else:
-                avg_temp = None
-                history_count = 0
-        
-        # Формируем сообщение
-        current_date = datetime.now().strftime("%d.%m.%Y")
-        current_time_utc = datetime.now(timezone.utc).strftime("%H:%M")
-        
-        if current_temp is not None:
-            # Формируем текст с текущей температурой
-            message = (
-                f"📊 Ежедневный отчет о температуре\n\n"
-                f"📅 Дата: {current_date}\n"
-                f"🕐 Время: {current_time_utc} UTC\n\n"
-                f"🌡️ Текущая температура подачи СО: {current_temp:.1f} °С\n"
-            )
-            
-            # Добавляем среднюю температуру, если есть данные
-            if avg_temp is not None and history_count > 0:
-                message += f"📈 Средняя температура за час: {avg_temp:.1f} °С\n"
-                message += f"📊 Количество измерений: {history_count}/{TEMP_HISTORY_SIZE}"
-                avg_temp_str = f"{avg_temp:.1f}"
-            else:
-                message += f"⚠️ Недостаточно данных для расчета средней температуры"
-                avg_temp_str = "N/A"
-                
-            logger.info(f"📤 Отправка отчета: текущая {current_temp:.1f} °С, средняя {avg_temp_str} °С")
-        else:
-            message = (
-                f"📊 Ежедневный отчет о температуре\n\n"
-                f"📅 Дата: {current_date}\n"
-                f"🕐 Время: {current_time_utc} UTC\n\n"
-                f"⚠️ Данные о температуре недоступны\n"
-                f"(возможно, нет связи с контроллером)"
-            )
-            logger.warning("⚠️ Отправка отчета: данные о температуре недоступны")
+        message = generate_temperature_report("📊 Ежедневный отчет о температуре")
         
         # Отправляем сообщение
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
@@ -258,11 +262,36 @@ async def daily_temperature_report(context: CallbackContext) -> None:
         except Exception as send_error:
             logger.error(f"❌ Не удалось отправить сообщение об ошибке: {send_error}")
 
+# Обработчик команды /temperature для показа температуры по запросу
+async def temperature_command(update, _context: CallbackContext) -> None:
+    """Обрабатывает команду /temperature и отправляет текущую температуру"""
+    logger.info(f"📱 Получена команда /temperature от пользователя {update.effective_user.id}")
+    
+    try:
+        message = generate_temperature_report("🌡️ Текущая температура отопления")
+        
+        # Отправляем сообщение
+        await update.message.reply_text(message)
+        logger.info("✅ Отчёт по команде /temperature отправлен")
+        
+    except Exception as cmd_error:
+        logger.error(f"❌ Ошибка при обработке команды /temperature: {cmd_error}")
+        try:
+            await update.message.reply_text(
+                f"❌ Ошибка при получении данных о температуре:\n{str(cmd_error)}"
+            )
+        except Exception as send_error:
+            logger.error(f"❌ Не удалось отправить сообщение об ошибке: {send_error}")
+
 # Главная функция
 def main():
     """Запускает Telegram бота и Modbus опрос"""
     # Создаём приложение Telegram-бота
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Регистрируем обработчик команды /temperature
+    app.add_handler(CommandHandler("temperature", temperature_command))
+    logger.info("📝 Зарегистрирована команда /temperature")
     
     # Отправляем уведомление о запуске (выполнится один раз через 2 секунды)
     app.job_queue.run_once(
