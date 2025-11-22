@@ -9,6 +9,7 @@ from telegram.ext import ApplicationBuilder, CallbackContext
 from loguru import logger
 import threading
 from collections import deque
+import asyncio
 
 init()
 
@@ -31,6 +32,7 @@ async def send_startup_notification(app):
                 text=                     "🚀 main.py запущен\n\n"
                      "✅ Modbus опрос активен (каждые 10 сек)\n"
                      "📊 Расчет средней температуры за час (360 измерений)\n"
+                     f"⚠️ Мониторинг низкой температуры (порог: {MIN_AVERAGE_TEMPERATURE:.1f} °С)\n"
                      "⏰ Ежедневные отчеты: 01:00 UTC и 14:00 UTC"
             )
             logger.info("✅ Уведомление о запуске отправлено в Telegram")
@@ -39,6 +41,42 @@ async def send_startup_notification(app):
             print(Fore.RED + f"Ошибка отправки сообщения в Telegram: {telegram_error}")
     else:
         logger.warning("⚠️ Telegram бот не настроен (отсутствуют TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID)")
+
+# Функция для проверки и отправки предупреждения о низкой температуре
+async def check_and_send_low_temp_warning(bot_app, avg_temp, history_count):
+    """Проверяет среднюю температуру и отправляет предупреждение, если она ниже минимальной"""
+    global low_temp_warning_sent
+    
+    if not TELEGRAM_CHAT_ID:
+        return
+    
+    # Проверяем условия: достаточно измерений и температура ниже минимальной
+    if history_count >= TEMP_HISTORY_SIZE and avg_temp < MIN_AVERAGE_TEMPERATURE:
+        # Отправляем предупреждение только если оно еще не было отправлено
+        if not low_temp_warning_sent:
+            try:
+                current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                message = (
+                    f"⚠️ ПРЕДУПРЕЖДЕНИЕ О НИЗКОЙ ТЕМПЕРАТУРЕ ⚠️\n\n"
+                    f"🕐 Время: {current_time}\n"
+                    f"🌡️ Средняя температура за час: {avg_temp:.1f} °С\n"
+                    f"📉 Минимальная допустимая: {MIN_AVERAGE_TEMPERATURE:.1f} °С\n"
+                    f"📊 Количество измерений: {history_count}/{TEMP_HISTORY_SIZE}\n\n"
+                    f"❄️ Средняя температура опустилась ниже {MIN_AVERAGE_TEMPERATURE:.1f} °С!"
+                )
+                
+                await bot_app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                low_temp_warning_sent = True
+                logger.warning(f"⚠️ Отправлено предупреждение о низкой температуре: {avg_temp:.1f} °С")
+                print(Fore.YELLOW + f"⚠️ Отправлено предупреждение о низкой температуре: {avg_temp:.1f} °С" + Fore.RESET)
+            except Exception as error:
+                logger.error(f"❌ Ошибка отправки предупреждения о низкой температуре: {error}")
+    
+    # Сбрасываем флаг, если температура поднялась до порога сброса
+    elif avg_temp >= TEMP_RESET_THRESHOLD and low_temp_warning_sent:
+        low_temp_warning_sent = False
+        logger.info(f"✅ Температура вернулась к норме: {avg_temp:.1f} °С (порог сброса: {TEMP_RESET_THRESHOLD:.1f} °С)")
+        print(Fore.GREEN + f"✅ Температура вернулась к норме: {avg_temp:.1f} °С" + Fore.RESET)
 
 print(Fore.GREEN + "Инициализация... начинаем опрос Z037..." + Fore.RESET)
 
@@ -49,16 +87,22 @@ UNIT_ID = 247
 REGISTER_ADDRESS_Tpod_SO = 5 # адрес регистра Температура подачи системы отопления
 
 # Константа для хранения истории температур (360 * 10 сек = 1 час)
-TEMP_MEASUREMENTS_PER_HOUR = 360
+TEMP_HISTORY_SIZE = 360
+# Минимальная допустимая средняя температура
+MIN_AVERAGE_TEMPERATURE = 25.0
+# Температура для сброса предупреждения о низкой температуре
+TEMP_RESET_THRESHOLD = 30.0
 
 # Глобальные переменные для хранения температуры
 last_temperature = None
 # Массив для хранения последних значений температуры (360 * 10 сек = 1 час)
-temperature_history = deque(maxlen=TEMP_MEASUREMENTS_PER_HOUR)
+temperature_history = deque(maxlen=TEMP_HISTORY_SIZE)
 temperature_lock = threading.Lock()
+# Флаг для отслеживания отправки предупреждения о низкой температуре
+low_temp_warning_sent = False
 
 # Функция для опроса Modbus (работает в отдельном потоке)
-def modbus_polling_loop():
+def modbus_polling_loop(bot_app=None):
     """Постоянно опрашивает Modbus и обновляет температуру"""
     global last_temperature, temperature_history
     
@@ -117,8 +161,15 @@ def modbus_polling_loop():
                             count = 1
                     
                     print(f"{current_time} - Температура подачи СО: {temp_pod_so_float_value:.1f} °С | "
-                          f"Средняя за час: {avg_temp:.1f} °С (измерений: {count}/{TEMP_MEASUREMENTS_PER_HOUR})")
+                          f"Средняя за час: {avg_temp:.1f} °С (измерений: {count}/{TEMP_HISTORY_SIZE})")
                     logger.debug(f"📊 Температура: {temp_pod_so_float_value:.1f} °С, средняя: {avg_temp:.1f} °С")
+                    
+                    # Проверяем температуру и отправляем предупреждение при необходимости
+                    if bot_app:
+                        try:
+                            asyncio.run(check_and_send_low_temp_warning(bot_app, avg_temp, count))
+                        except Exception as check_error:
+                            logger.error(f"❌ Ошибка при проверке температуры: {check_error}")
 
                     # Закрываем соединение после успешного чтения
                     client.close()
@@ -176,7 +227,7 @@ async def daily_temperature_report(context: CallbackContext) -> None:
             # Добавляем среднюю температуру, если есть данные
             if avg_temp is not None and history_count > 0:
                 message += f"📈 Средняя температура за час: {avg_temp:.1f} °С\n"
-                message += f"📊 Количество измерений: {history_count}/{TEMP_MEASUREMENTS_PER_HOUR}"
+                message += f"📊 Количество измерений: {history_count}/{TEMP_HISTORY_SIZE}"
                 avg_temp_str = f"{avg_temp:.1f}"
             else:
                 message += f"⚠️ Недостаточно данных для расчета средней температуры"
@@ -224,18 +275,12 @@ def main():
         daily_temperature_report,
         time=dtime(hour=1, minute=0)
     )
-    
-    # Планируем ежедневную отправку температуры в 14:00 UTC
-    app.job_queue.run_daily(
-        daily_temperature_report,
-        time=dtime(hour=14, minute=0)
-    )
-    
+
     logger.success("🚀 Telegram бот настроен")
     logger.info("⏰ Расписание: отчеты о температуре каждый день в 01:00 UTC и 14:00 UTC")
     
-    # Запускаем Modbus опрос в отдельном потоке
-    modbus_thread = threading.Thread(target=modbus_polling_loop, daemon=True)
+    # Запускаем Modbus опрос в отдельном потоке с передачей объекта бота
+    modbus_thread = threading.Thread(target=modbus_polling_loop, args=(app,), daemon=True)
     modbus_thread.start()
     logger.info("🔄 Modbus опрос запущен в отдельном потоке")
     
