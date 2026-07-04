@@ -35,8 +35,8 @@ async def send_startup_notification(app):
                      "   • Температура подачи СО (регистр 5)\n"
                      "   • Температура воздуха в котельной (регистр 7)\n"
                      "📊 Расчет средней температуры за час (360 измерений)\n"
-                     f"⚠️ Мониторинг низкой температуры подачи СО (порог: {MIN_AVERAGE_TEMPERATURE:.1f} °С)\n"
-                     "⏰ Ежедневные отчеты: 01:00 UTC и 14:00 UTC\n\n"
+                     "⚠️ Мониторинг аварии низкой температуры подачи СО (сетевая переменная: А: низкая Тпод СО)\n"
+                     "⏰ Ежедневный отчет: 01:00 UTC\n\n"
                      "💡 Доступные команды:\n"
                      "   /temperature - показать текущую температуру"
             )
@@ -47,41 +47,35 @@ async def send_startup_notification(app):
     else:
         logger.warning("⚠️ Telegram бот не настроен (отсутствуют TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID)")
 
-# Функция для проверки и отправки предупреждения о низкой температуре
-async def check_and_send_low_temp_warning(bot_app, avg_temp, history_count):
-    """Проверяет среднюю температуру и отправляет предупреждение, если она ниже минимальной"""
-    global low_temp_warning_sent
+# Функция для отправки предупреждения при переходе аварии низкой температуры в активное состояние
+async def check_and_send_low_temp_alarm(bot_app, alarm_state):
+    """Отправляет предупреждение при переходе аварии низкой температуры из 0 в 1."""
+    global last_low_temp_alarm_state
     
     if not TELEGRAM_CHAT_ID:
+        last_low_temp_alarm_state = alarm_state
         return
     
-    # Проверяем условия: достаточно измерений и температура ниже минимальной
-    if history_count >= TEMP_HISTORY_SIZE and avg_temp < MIN_AVERAGE_TEMPERATURE:
-        # Отправляем предупреждение только если оно еще не было отправлено
-        if not low_temp_warning_sent:
-            try:
-                current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                message = (
-                    f"⚠️ ПРЕДУПРЕЖДЕНИЕ О НИЗКОЙ ТЕМПЕРАТУРЕ ⚠️\n\n"
-                    f"🕐 Время: {current_time}\n"
-                    f"🌡️ Средняя температура за час: {avg_temp:.1f} °С\n"
-                    f"📉 Минимальная допустимая: {MIN_AVERAGE_TEMPERATURE:.1f} °С\n"
-                    f"📊 Количество измерений: {history_count}/{TEMP_HISTORY_SIZE}\n\n"
-                    f"❄️ Средняя температура опустилась ниже {MIN_AVERAGE_TEMPERATURE:.1f} °С!"
-                )
-                
-                await bot_app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-                low_temp_warning_sent = True
-                logger.warning(f"⚠️ Отправлено предупреждение о низкой температуре: {avg_temp:.1f} °С")
-                print(Fore.YELLOW + f"⚠️ Отправлено предупреждение о низкой температуре: {avg_temp:.1f} °С" + Fore.RESET)
-            except Exception as error:
-                logger.error(f"❌ Ошибка отправки предупреждения о низкой температуре: {error}")
-    
-    # Сбрасываем флаг, если температура поднялась до порога сброса
-    elif avg_temp >= TEMP_RESET_THRESHOLD and low_temp_warning_sent:
-        low_temp_warning_sent = False
-        logger.info(f"✅ Температура вернулась к норме: {avg_temp:.1f} °С (порог сброса: {TEMP_RESET_THRESHOLD:.1f} °С)")
-        print(Fore.GREEN + f"✅ Температура вернулась к норме: {avg_temp:.1f} °С" + Fore.RESET)
+    is_rising_edge = last_low_temp_alarm_state is False and alarm_state is True
+    last_low_temp_alarm_state = alarm_state
+
+    if not is_rising_edge:
+        return
+
+    try:
+        current_time = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        message = (
+            "⚠️ ПРЕДУПРЕЖДЕНИЕ О НИЗКОЙ ТЕМПЕРАТУРЕ ⚠️\n\n"
+            f"🕐 Время: {current_time}\n"
+            "🌡️ Авария: низкая температура подачи в системе отопления\n"
+            "📡 Источник: сетевая переменная \"А: низкая Тпод СО\" перешла из 0 в 1"
+        )
+
+        await bot_app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        logger.warning("⚠️ Отправлено предупреждение: авария низкой температуры подачи СО")
+        print(Fore.YELLOW + "⚠️ Отправлено предупреждение: авария низкой температуры подачи СО" + Fore.RESET)
+    except Exception as error:
+        logger.error(f"❌ Ошибка отправки предупреждения о низкой температуре: {error}")
 
 print(Fore.GREEN + "Инициализация... начинаем опрос Z037..." + Fore.RESET)
 
@@ -91,21 +85,18 @@ MODBUS_PORT = 8502
 UNIT_ID = 247
 REGISTER_ADDRESS_Tpod_SO = 5 # адрес регистра Температура подачи системы отопления
 REGISTER_ADDRESS_Tvozd_kotel = 7 # адрес регистра Температура воздуха в котельной
+REGISTER_ADDRESS_LOW_TEMP_ALARM = 0 # адрес сетевой переменной "А: низкая Тпод СО"
 
 # Константа для хранения истории температур (360 * 10 сек = 1 час)
 TEMP_HISTORY_SIZE = 360
-# Минимальная допустимая средняя температура
-MIN_AVERAGE_TEMPERATURE = 25.0
-# Температура для сброса предупреждения о низкой температуре
-TEMP_RESET_THRESHOLD = 30.0
 
 # Глобальные переменные для хранения температуры подачи СО
 last_temperature = None
 # Массив для хранения последних значений температуры (360 * 10 сек = 1 час)
 temperature_history = deque(maxlen=TEMP_HISTORY_SIZE)
 temperature_lock = threading.Lock()
-# Флаг для отслеживания отправки предупреждения о низкой температуре
-low_temp_warning_sent = False
+# Предыдущее состояние аварии низкой температуры подачи СО
+last_low_temp_alarm_state = None
 
 # Глобальные переменные для хранения температуры воздуха в котельной
 last_temperature_air = None
@@ -133,6 +124,29 @@ def modbus_polling_loop(bot_app=None):
                         logger.warning("⚠️ Modbus: не удалось подключиться")
                         time.sleep(10)
                         continue
+
+                # Читаем сетевую переменную аварии низкой температуры подачи СО
+                result_low_temp_alarm = client.read_holding_registers(
+                    address=REGISTER_ADDRESS_LOW_TEMP_ALARM,
+                    count=1,
+                    device_id=UNIT_ID
+                )
+
+                if hasattr(result_low_temp_alarm, 'isError') and result_low_temp_alarm.isError():
+                    print(Fore.RED + f"Ошибка чтения аварии низкой температуры подачи СО: {result_low_temp_alarm}")
+                    logger.error(f"❌ Modbus: ошибка чтения аварии низкой температуры подачи СО: {result_low_temp_alarm}")
+                elif not hasattr(result_low_temp_alarm, 'registers'):
+                    print(Fore.RED + "Ошибка: некорректный ответ от контроллера (авария низкой температуры подачи СО)")
+                    logger.error("❌ Modbus: некорректный ответ, нет атрибута registers (авария низкой температуры подачи СО)")
+                else:
+                    low_temp_alarm_state = bool(result_low_temp_alarm.registers[0])
+                    logger.debug(f"⚠️ Авария низкой температуры подачи СО: {int(low_temp_alarm_state)}")
+
+                    if bot_app:
+                        try:
+                            asyncio.run(check_and_send_low_temp_alarm(bot_app, low_temp_alarm_state))
+                        except Exception as check_error:
+                            logger.error(f"❌ Ошибка при проверке аварии низкой температуры: {check_error}")
 
                 # Читаем 2 регистра для температуры подачи СО
                 result = client.read_holding_registers(address=REGISTER_ADDRESS_Tpod_SO, count=2, device_id=UNIT_ID)
@@ -224,14 +238,6 @@ def modbus_polling_loop(bot_app=None):
                               f"Температура воздуха: недоступна")
                         logger.debug(f"📊 Температура подачи СО: {temp_pod_so_float_value:.1f} °С, средняя: {avg_temp:.1f} °С | "
                                    f"Температура воздуха: недоступна")
-                    
-                    # Проверяем температуру подачи СО и отправляем предупреждение при необходимости
-                    if bot_app:
-                        try:
-                            asyncio.run(check_and_send_low_temp_warning(bot_app, avg_temp, count))
-                        except Exception as check_error:
-                            logger.error(f"❌ Ошибка при проверке температуры: {check_error}")
-
                     # Закрываем соединение после успешного чтения
                     client.close()
 
@@ -391,7 +397,7 @@ def main():
     )
 
     logger.success("🚀 Telegram бот настроен")
-    logger.info("⏰ Расписание: отчеты о температуре каждый день в 01:00 UTC и 14:00 UTC")
+    logger.info("⏰ Расписание: отчет о температуре каждый день в 01:00 UTC")
     
     # Запускаем Modbus опрос в отдельном потоке с передачей объекта бота
     modbus_thread = threading.Thread(target=modbus_polling_loop, args=(app,), daemon=True)
@@ -399,7 +405,7 @@ def main():
     logger.info("🔄 Modbus опрос запущен в отдельном потоке")
     
     print(Fore.GREEN + "✅ Бот запущен. Ожидание команд и выполнение по расписанию..." + Fore.RESET)
-    print(Fore.CYAN + "⏰ Ежедневные отчеты о температуре: 01:00 UTC и 14:00 UTC" + Fore.RESET)
+    print(Fore.CYAN + "⏰ Ежедневный отчет о температуре: 01:00 UTC" + Fore.RESET)
     
     # Запускаем polling — бот начинает работу
     app.run_polling()
